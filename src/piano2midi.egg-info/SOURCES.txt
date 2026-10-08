@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+src/piano2midi/__init__.py
+src/piano2midi.egg-info/PKG-INFO
+src/piano2midi.egg-info/SOURCES.txt
+src/piano2midi.egg-info/dependency_links.txt
+src/piano2midi.egg-info/top_level.txt

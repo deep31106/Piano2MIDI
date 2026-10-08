@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: piano2midi
+Version: 0.1.0
+Summary: Local piano audio to MIDI transcription tool
+Requires-Python: <3.13,>=3.12
