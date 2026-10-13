@@ -30,3 +30,6 @@ Thumbs.db
 
 ncls_install_log.txt
 *.egg-info/
+# Local transcription test data
+recordings/
+transcriptions/

@@ -6,11 +6,12 @@ import mido
 from piano2midi.evaluation.metrics import evaluate_notes
 
 
+
 def midi_to_notes(midi_path):
     """Convert MIDI note events to pitch/onset/offset dictionaries in seconds."""
     midi = mido.MidiFile(midi_path)
 
-    # Merge tracks so events are processed in chronological tick order.
+    # Convert each track's delta ticks into absolute ticks.
     events = []
     for track in midi.tracks:
         absolute_tick = 0
@@ -18,7 +19,22 @@ def midi_to_notes(midi_path):
             absolute_tick += message.time
             events.append((absolute_tick, message))
 
-    events.sort(key=lambda item: item[0])
+    # At the same tick, process tempo changes and note-offs
+    # before note-ons. This handles repeated notes more safely.
+    def event_priority(item):
+        message = item[1]
+
+        if message.type == "set_tempo":
+            return 0
+        if message.type == "note_off" or (
+            message.type == "note_on" and message.velocity == 0
+        ):
+            return 1
+        if message.type == "note_on":
+            return 2
+        return 3
+
+    events.sort(key=lambda item: (item[0], event_priority(item)))
 
     tempo = 500_000  # MIDI default: 120 BPM
     previous_tick = 0
@@ -27,11 +43,11 @@ def midi_to_notes(midi_path):
     notes = []
 
     for tick, message in events:
-        elapsed_seconds += (
-            (tick - previous_tick)
-            * tempo
-            / 1_000_000
-            / midi.ticks_per_beat
+        # Convert the tick interval using the tempo active during it.
+        elapsed_seconds += mido.tick2second(
+            tick - previous_tick,
+            midi.ticks_per_beat,
+            tempo,
         )
         previous_tick = tick
 
@@ -47,17 +63,17 @@ def midi_to_notes(midi_path):
         ):
             key = (message.channel, message.note)
             starts = active_notes.get(key, [])
+
             if starts:
                 onset = starts.pop(0)
-                notes.append(
-                    {
-                        "pitch": message.note,
-                        "onset": onset,
-                        "offset": elapsed_seconds,
-                    }
-                )
+                notes.append({
+                    "pitch": message.note,
+                    "onset": onset,
+                    "offset": elapsed_seconds,
+                })
 
     return notes
+
 
 
 def main():
@@ -65,10 +81,13 @@ def main():
     test_dir = Path.home() / "projects" / "piano2midi-test"
 
     prediction_path = test_dir / "piano_sample_20s.mid"
-    reference_path = Path(
-        "/mnt/c/Users/Deep/Desktop/Deep/Piano2MIDI/"
-        "piano2midi/data/raw/maestro/piano_sample.midi"
-    )
+    reference_path = (
+    project_root
+    / "data"
+    / "raw"
+    / "maestro"
+    / "piano_sample.midi"
+)
 
     if not prediction_path.exists():
         raise FileNotFoundError(prediction_path)

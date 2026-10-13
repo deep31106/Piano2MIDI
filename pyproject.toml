@@ -10,3 +10,7 @@ requires-python = ">=3.11,<3.13"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+
+[project.scripts]
+piano2midi = "piano2midi.cli:main"
