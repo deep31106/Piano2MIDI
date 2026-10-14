@@ -2,6 +2,10 @@
 """Command-line interface for batch piano transcription."""
 
 import argparse
+import shutil
+import subprocess
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 from piano2midi.transcription.transkun_backend import (
@@ -9,28 +13,30 @@ from piano2midi.transcription.transkun_backend import (
     transcribe,
 )
 
-SUPPORTED_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg"}
+AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg"}
+VIDEO_EXTENSIONS = {".mp4", ".mov"}
+SUPPORTED_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
         prog="piano2midi",
-        description="Transcribe piano audio to MIDI using Transkun.",
+        description="Transcribe piano audio or video to MIDI using Transkun.",
     )
     parser.add_argument(
         "inputs",
         nargs="*",
-        help="Audio files to transcribe.",
+        help="Audio or video files to transcribe.",
     )
     parser.add_argument(
         "--input-dir",
         type=Path,
-        help="Process supported audio files in this directory.",
+        help="Process supported files in this directory.",
     )
     parser.add_argument(
         "--recursive",
         action="store_true",
-        help="Include audio files in subdirectories.",
+        help="Include files in subdirectories when using --input-dir.",
     )
     parser.add_argument(
         "--output-dir",
@@ -57,6 +63,57 @@ def parse_args():
     return parser.parse_args()
 
 
+@contextmanager
+def prepare_audio(input_path: Path):
+    """Yield an audio file, extracting audio from video when necessary."""
+    if input_path.suffix.lower() not in VIDEO_EXTENSIONS:
+        yield input_path
+        return
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise ValueError(
+            "FFmpeg was not found. Install FFmpeg and add it to PATH "
+            "to transcribe video files."
+        )
+
+    with tempfile.TemporaryDirectory(prefix="piano2midi_") as temp_dir:
+        extracted_audio = Path(temp_dir) / "extracted.wav"
+
+        command = [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(input_path),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "44100",
+            "-c:a",
+            "pcm_s16le",
+            str(extracted_audio),
+        ]
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode != 0 or not extracted_audio.is_file():
+            details = (result.stderr or "").strip()
+            message = (
+                f"FFmpeg could not extract audio from {input_path.name}."
+            )
+            if details:
+                message += f" Details: {details[-1000:]}"
+            raise ValueError(message)
+
+        yield extracted_audio
+
+
 def collect_inputs(args):
     files = [Path(item).expanduser() for item in args.inputs]
 
@@ -65,9 +122,12 @@ def collect_inputs(args):
         if not directory.is_dir():
             raise ValueError(f"Input directory not found: {directory}")
 
-        iterator = directory.rglob("*") if args.recursive else directory.iterdir()
+        iterator = (
+            directory.rglob("*") if args.recursive else directory.iterdir()
+        )
         files.extend(
-            path for path in iterator
+            path
+            for path in iterator
             if path.is_file()
             and path.suffix.lower() in SUPPORTED_EXTENSIONS
         )
@@ -75,6 +135,7 @@ def collect_inputs(args):
     # Deduplicate paths while preserving order.
     unique_files = []
     seen = set()
+
     for path in files:
         resolved = path.resolve()
         if resolved not in seen:
@@ -83,7 +144,8 @@ def collect_inputs(args):
 
     if not unique_files:
         raise ValueError(
-            "No input files found. Supply audio paths or use --input-dir."
+            "No input files found. Supply audio/video paths "
+            "or use --input-dir."
         )
 
     return unique_files
@@ -105,20 +167,21 @@ def main():
     failed = 0
     total = len(inputs)
 
-    for index, audio in enumerate(inputs, start=1):
-        print(f"\n[{index}/{total}] {audio.name}")
+    for index, source in enumerate(inputs, start=1):
+        print(f"\n[{index}/{total}] {source.name}")
 
-        if not audio.is_file():
-            print(f"  FAILED: input file not found: {audio}")
+        if not source.is_file():
+            print(f"  FAILED: input file not found: {source}")
             failed += 1
             continue
 
-        if audio.suffix.lower() not in SUPPORTED_EXTENSIONS:
-            print(f"  FAILED: unsupported audio format: {audio.suffix}")
+        if source.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            print(f"  FAILED: unsupported input format: {source.suffix}")
             failed += 1
             continue
 
-        output = args.output_dir / f"{audio.stem}.mid"
+        # Use the original filename, not the temporary extracted WAV name.
+        output = args.output_dir / f"{source.stem}.mid"
 
         if output.exists() and not args.overwrite:
             print(f"  SKIPPED: output already exists: {output}")
@@ -126,14 +189,17 @@ def main():
             continue
 
         try:
-            result = transcribe(
-                audio,
-                output,
-                device=args.device,
-                executable=args.transkun_executable,
-            )
+            with prepare_audio(source) as audio_input:
+                result = transcribe(
+                    audio_input,
+                    output,
+                    device=args.device,
+                    executable=args.transkun_executable,
+                )
+
             print(f"  OK: {result}")
             succeeded += 1
+
         except (TranskunError, OSError, ValueError) as exc:
             print(f"  FAILED: {exc}")
             failed += 1
