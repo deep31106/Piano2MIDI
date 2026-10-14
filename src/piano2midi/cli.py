@@ -1,12 +1,14 @@
 
-"""Command-line interface for batch piano transcription."""
+"""Command-line interface for local and online piano transcription."""
 
 import argparse
 import shutil
 import subprocess
+import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 from piano2midi.transcription.transkun_backend import (
     TranskunError,
@@ -17,16 +19,43 @@ AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg"}
 VIDEO_EXTENSIONS = {".mp4", ".mov"}
 SUPPORTED_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
 
+ALLOWED_URL_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "youtu.be",
+    "www.youtu.be",
+    "instagram.com",
+    "www.instagram.com",
+}
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
         prog="piano2midi",
-        description="Transcribe piano audio or video to MIDI using Transkun.",
+        description=(
+            "Transcribe piano audio/video files or accessible online "
+            "media to MIDI using Transkun."
+        ),
+        epilog=(
+            "Local files are processed locally. The --url option requires "
+            "internet access and yt-dlp. Video inputs require FFmpeg."
+        ),
     )
     parser.add_argument(
         "inputs",
         nargs="*",
-        help="Audio or video files to transcribe.",
+        help="Local audio or video files to transcribe.",
+    )
+    parser.add_argument(
+        "--url",
+        action="append",
+        default=[],
+        metavar="URL",
+        help=(
+            "Download accessible media from YouTube or Instagram. "
+            "Requires internet access; may be repeated."
+        ),
     )
     parser.add_argument(
         "--input-dir",
@@ -61,6 +90,16 @@ def parse_args():
         help="Replace existing MIDI outputs.",
     )
     return parser.parse_args()
+
+
+def validate_url(url: str) -> None:
+    """Allow only HTTPS URLs from the explicitly supported hostnames."""
+    parsed = urlparse(url)
+
+    if parsed.scheme != "https" or parsed.hostname not in ALLOWED_URL_HOSTS:
+        raise ValueError(
+            "Unsupported URL. Supply an HTTPS YouTube or Instagram URL."
+        )
 
 
 @contextmanager
@@ -114,6 +153,77 @@ def prepare_audio(input_path: Path):
         yield extracted_audio
 
 
+@contextmanager
+def download_url_audio(url: str):
+    """Download accessible online media and yield its extracted WAV audio."""
+    validate_url(url)
+
+    # Check that yt-dlp is installed in the Python environment running this CLI.
+    check = subprocess.run(
+        [sys.executable, "-m", "yt_dlp", "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if check.returncode != 0:
+        raise ValueError(
+            "Online URL support requires yt-dlp. Install it with: "
+            "python -m pip install yt-dlp"
+        )
+
+    if shutil.which("ffmpeg") is None:
+        raise ValueError(
+            "FFmpeg was not found. Install FFmpeg and add it to PATH "
+            "for online audio extraction."
+        )
+
+    with tempfile.TemporaryDirectory(prefix="piano2midi_url_") as temp_dir:
+        temp_path = Path(temp_dir)
+        output_template = str(temp_path / "%(id)s.%(ext)s")
+
+        command = [
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "--no-playlist",
+            "--no-warnings",
+            "--format",
+            "bestaudio/best",
+            "--extract-audio",
+            "--audio-format",
+            "wav",
+            "--output",
+            output_template,
+            url,
+        ]
+
+        print("  Downloading audio (internet required)...")
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout or "").strip()
+            raise ValueError(
+                "Could not download/extract audio from this URL. "
+                "The media may be unavailable, require login, or be "
+                "unsupported."
+                + (f" Details: {details[-1200:]}" if details else "")
+            )
+
+        audio_files = list(temp_path.glob("*.wav"))
+        if not audio_files:
+            raise ValueError(
+                "yt-dlp completed but did not produce a WAV audio file."
+            )
+
+        # The ID-based filename avoids relying on a video's title.
+        yield audio_files[0]
+
+
 def collect_inputs(args):
     files = [Path(item).expanduser() for item in args.inputs]
 
@@ -132,7 +242,6 @@ def collect_inputs(args):
             and path.suffix.lower() in SUPPORTED_EXTENSIONS
         )
 
-    # Deduplicate paths while preserving order.
     unique_files = []
     seen = set()
 
@@ -142,13 +251,22 @@ def collect_inputs(args):
             seen.add(resolved)
             unique_files.append(resolved)
 
-    if not unique_files:
+    if not unique_files and not args.url:
         raise ValueError(
-            "No input files found. Supply audio/video paths "
-            "or use --input-dir."
+            "No inputs found. Supply file paths, --input-dir, or --url."
         )
 
     return unique_files
+
+
+def transcribe_one(audio_input, output, args):
+    """Run the existing Transkun backend on a prepared audio file."""
+    return transcribe(
+        audio_input,
+        output,
+        device=args.device,
+        executable=args.transkun_executable,
+    )
 
 
 def main():
@@ -156,6 +274,8 @@ def main():
 
     try:
         inputs = collect_inputs(args)
+        for url in args.url:
+            validate_url(url)
     except ValueError as exc:
         print(f"Error: {exc}")
         return 2
@@ -165,8 +285,9 @@ def main():
     succeeded = 0
     skipped = 0
     failed = 0
-    total = len(inputs)
+    total = len(inputs) + len(args.url)
 
+    # Process local files first.
     for index, source in enumerate(inputs, start=1):
         print(f"\n[{index}/{total}] {source.name}")
 
@@ -180,7 +301,6 @@ def main():
             failed += 1
             continue
 
-        # Use the original filename, not the temporary extracted WAV name.
         output = args.output_dir / f"{source.stem}.mid"
 
         if output.exists() and not args.overwrite:
@@ -190,16 +310,32 @@ def main():
 
         try:
             with prepare_audio(source) as audio_input:
-                result = transcribe(
-                    audio_input,
-                    output,
-                    device=args.device,
-                    executable=args.transkun_executable,
-                )
+                result = transcribe_one(audio_input, output, args)
 
             print(f"  OK: {result}")
             succeeded += 1
+        except (TranskunError, OSError, ValueError) as exc:
+            print(f"  FAILED: {exc}")
+            failed += 1
 
+    # Online downloads use temporary directories that are cleaned up
+    # automatically after each transcription attempt.
+    for url_index, url in enumerate(args.url, start=len(inputs) + 1):
+        print(f"\n[{url_index}/{total}] Online URL")
+
+        try:
+            with download_url_audio(url) as audio_input:
+                output = args.output_dir / f"{audio_input.stem}.mid"
+
+                if output.exists() and not args.overwrite:
+                    print(f"  SKIPPED: output already exists: {output}")
+                    skipped += 1
+                    continue
+
+                result = transcribe_one(audio_input, output, args)
+
+            print(f"  OK: {result}")
+            succeeded += 1
         except (TranskunError, OSError, ValueError) as exc:
             print(f"  FAILED: {exc}")
             failed += 1

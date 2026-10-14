@@ -1,3 +1,4 @@
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
@@ -8,9 +9,11 @@ version = "0.1.0"
 description = "Local piano audio to MIDI transcription tool"
 requires-python = ">=3.11,<3.13"
 
+[project.optional-dependencies]
+online = ["yt-dlp"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
-
 
 [project.scripts]
 piano2midi = "piano2midi.cli:main"
