@@ -1,3 +1,5 @@
+-e .
+pytest
 jupyter
 ipykernel
 numpy

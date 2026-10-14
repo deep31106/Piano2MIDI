@@ -33,6 +33,7 @@ ncls_install_log.txt
 # Local transcription test data
 recordings/
 transcriptions/
+output/
 
 # Local backup files
 *.bak

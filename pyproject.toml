@@ -8,6 +8,9 @@ name = "piano2midi"
 version = "0.1.0"
 description = "Local piano audio to MIDI transcription tool"
 requires-python = ">=3.11,<3.13"
+dependencies = [
+    "PySide6",
+]
 
 [project.optional-dependencies]
 online = ["yt-dlp"]
