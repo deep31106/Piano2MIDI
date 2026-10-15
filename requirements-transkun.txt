@@ -1,0 +1,3 @@
+ncls==0.0.68
+transkun==2.0.1
+setuptools<81
