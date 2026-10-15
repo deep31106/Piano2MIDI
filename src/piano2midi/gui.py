@@ -6,7 +6,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QSettings
 from PySide6.QtGui import QFont, QColor, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -242,6 +242,7 @@ class TranscriptionWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.settings = QSettings("Piano2MIDI", "Piano2MIDI")
         self.setWindowTitle("Piano2MIDI")
         self.resize(1050, 760)
         self.setMinimumSize(800, 620)
@@ -295,7 +296,16 @@ class MainWindow(QMainWindow):
 
         options_row = QHBoxLayout()
         options_row.addWidget(QLabel("Output folder"))
-        self.output_input = QLineEdit(str(APP_DIR / "output"))
+
+        saved_output_dir = self.settings.value(
+            "output_dir",
+            str(APP_DIR / "output"),
+            type=str,
+        )
+
+        self.output_input = QLineEdit(saved_output_dir)
+        self.output_input.textChanged.connect(self.save_output_directory)
+
         options_row.addWidget(self.output_input, 1)
         output_button = QPushButton("Change")
         output_button.clicked.connect(self.choose_output_folder)
@@ -435,6 +445,9 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 0, file_item)
             self.table.setItem(row, 1, status_item)
             self.table.setItem(row, 2, output_item)
+
+    def save_output_directory(self, folder):
+        self.settings.setValue("output_dir", folder)
 
     def choose_output_folder(self):
         folder = QFileDialog.getExistingDirectory(
